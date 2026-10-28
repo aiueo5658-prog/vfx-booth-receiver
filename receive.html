@@ -7,9 +7,8 @@
 <title>VFX BOOTH 受信</title>
 <link rel="stylesheet" href="m3.css">
 <style>
-body { background: radial-gradient(700px 400px at 50% -10%, rgba(98,245,143,.10), transparent 60%), var(--surface); padding-bottom: 40px; }
-.bar { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 16px; border-bottom: 1px solid var(--outline-variant); }
-.logo { width: 32px; height: 32px; border-radius: 9px; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; box-shadow: 0 0 20px rgba(98,245,143,.4); }
+body { background: radial-gradient(900px 500px at 110% 110%, rgba(0,255,0,.16), transparent 60%), #000; padding-bottom: 40px; }
+.bar { display: flex; align-items: center; gap: 11px; height: 64px; padding: 0 16px; }
 .bar .title-m { letter-spacing: .12em; font-weight: 700; }
 main { max-width: 560px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .howto { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -22,7 +21,7 @@ main { max-width: 560px; margin: 0 auto; padding: 16px; display: flex; flex-dire
 .stat { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(18px, 1fr)); gap: 4px; margin-top: 12px; }
 .grid i { aspect-ratio: 1; border-radius: 4px; background: var(--sc-highest); transition: background .15s; }
-.grid i.on { background: var(--primary); box-shadow: 0 0 8px rgba(98,245,143,.5); }
+.grid i.on { background: var(--primary); box-shadow: 0 0 8px rgba(0,255,0,.5); }
 .prog { height: 6px; border-radius: 3px; background: var(--sc-highest); overflow: hidden; margin-top: 10px; }
 .prog > div { height: 100%; width: 0; background: var(--primary); transition: width .15s; }
 .done { text-align: center; }
@@ -32,7 +31,7 @@ main { max-width: 560px; margin: 0 auto; padding: 16px; display: flex; flex-dire
 </style>
 </head>
 <body>
-<div class="bar"><span class="logo"><i data-ic="movie"></i></span><span class="title-m">VFX BOOTH</span></div>
+<div class="bar"><svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13" fill="none" stroke="#00ff00" stroke-width="2"/><circle cx="19.5" cy="13.5" r="11" fill="#000"/></svg><span class="title-m" style="letter-spacing:-.01em">VFX BOOTH</span></div>
 <main>
   <div id="scan" class="row">
     <div class="howto">
@@ -56,7 +55,7 @@ main { max-width: 560px; margin: 0 auto; padding: 16px; display: flex; flex-dire
     <a id="https" class="btn outlined" hidden>HTTPS版に切り替える</a>
   </div>
   <div id="result" class="done" hidden>
-    <div class="chip ok" style="margin-bottom:12px">全部集まりました</div>
+    <div class="chip ok" style="margin-bottom:12px">DONE · 全部集まりました</div>
     <img id="img" alt="受け取った写真">
     <p class="body-m muted" style="margin:10px 0">写真を長押しして「写真に追加」でも保存できます</p>
     <div class="row">
