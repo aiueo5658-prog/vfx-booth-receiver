@@ -31,43 +31,109 @@ const VFX = (() => {
   for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; T[i] = c >>> 0; }
   function crc32(u) { let c = 0xFFFFFFFF; for (let i = 0; i < u.length; i++) c = T[(c ^ u[i]) & 255] ^ (c >>> 8); return ((c ^ 0xFFFFFFFF) >>> 0); }
 
-  // 1チャンク = 12バイトのヘッダ + 画像データ(バイナリのまま)
-  // ヘッダ: 'V','2', セッション(2) 番号(2) 総数(2) 全体CRC32(4)
-  const HEAD = 12;
-  function makeChunks(bytes, size = 600) {
-    const sess = Math.floor(Math.random() * 65536), tot = Math.ceil(bytes.length / size), crc = crc32(bytes), out = [];
-    for (let i = 0; i < tot; i++) {
-      const d = bytes.subarray(i * size, (i + 1) * size), u = new Uint8Array(HEAD + d.length);
-      u.set([0x56, 0x32, sess >> 8, sess & 255, i >> 8, i & 255, tot >> 8, tot & 255, crc >>> 24, (crc >>> 16) & 255, (crc >>> 8) & 255, crc & 255]);
-      u.set(d, HEAD); out.push(u);
+  // ── 取りこぼしに強い符号化(噴水符号の簡易版)
+  // 最初のK枚は元データそのもの、それ以降は「いくつかを足し合わせた」補正QRを出し続ける。
+  // 受信側はどの順でも、足りる枚数さえ読めれば復元できる(1枚読み損ねても次の周回を待たない)。
+  const A = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';   // QR英数字モードで高密度
+  function b45enc(u) {
+    let o = '';
+    for (let i = 0; i < u.length; i += 2) {
+      if (i + 1 < u.length) { let n = u[i] * 256 + u[i + 1]; const e = Math.floor(n / 2025); n %= 2025; o += A[n % 45] + A[Math.floor(n / 45)] + A[e]; }
+      else o += A[u[i] % 45] + A[Math.floor(u[i] / 45)];
     }
-    return out;
+    return o;
   }
-  function parseChunk(b) {
-    if (!b || b.length <= HEAD || b[0] !== 0x56 || b[1] !== 0x32) return null;
-    const tot = (b[6] << 8) | b[7], idx = (b[4] << 8) | b[5];
-    if (!(tot > 0 && idx < tot)) return null;
-    return { sess: (b[2] << 8) | b[3], idx, tot, crc: ((b[8] << 24) | (b[9] << 16) | (b[10] << 8) | b[11]) >>> 0, data: Uint8Array.from(b.slice ? b.slice(HEAD) : Array.prototype.slice.call(b, HEAD)) };
+  function b45dec(s) {
+    const out = [];
+    for (let i = 0; i < s.length; i += 3) {
+      if (i + 2 < s.length) {
+        const c = A.indexOf(s[i]), d = A.indexOf(s[i + 1]), e = A.indexOf(s[i + 2]), n = c + d * 45 + e * 2025;
+        if (c < 0 || d < 0 || e < 0 || n > 65535) throw new Error('b45');
+        out.push(n >> 8, n & 255);
+      } else if (i + 1 < s.length) {
+        const c = A.indexOf(s[i]), d = A.indexOf(s[i + 1]);
+        if (c < 0 || d < 0) throw new Error('b45');
+        out.push(c + d * 45);
+      } else throw new Error('b45');
+    }
+    return Uint8Array.from(out);
   }
-  function assemble(map, tot) {
-    let n = 0; for (let i = 0; i < tot; i++) n += map.get(i).length;
-    const out = new Uint8Array(n); let o = 0; for (let i = 0; i < tot; i++) { out.set(map.get(i), o); o += map.get(i).length; }
-    return out;
+  const HEAD = 16;   // 'V','3', セッション2, 通し番号2, 元の枚数K 2, 元のバイト数4, CRC32 4
+  function rng32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  function indices(sess, seq, K) {
+    if (seq < K) return [seq];
+    const r = rng32(((sess << 16) ^ Math.imul(seq, 2654435761) ^ 0x9E3779B9) | 0), set = [];
+    for (let i = 0; i < K; i++) if (r() < .5) set.push(i);
+    return set.length ? set : [Math.floor(r() * K)];
+  }
+  const xor = (a, b) => { for (let i = 0; i < a.length; i++) a[i] ^= b[i]; return a; };
+  class Encoder {
+    constructor(bytes, size = 200) {
+      this.size = size; this.len = bytes.length; this.K = Math.max(1, Math.ceil(bytes.length / size));
+      this.sess = Math.floor(Math.random() * 65536); this.crc = crc32(bytes); this.src = [];
+      for (let i = 0; i < this.K; i++) { const c = new Uint8Array(size); c.set(bytes.subarray(i * size, (i + 1) * size)); this.src.push(c); }
+    }
+    frame(seq) {
+      const s = seq & 0xFFFF, idx = indices(this.sess, s, this.K), d = new Uint8Array(this.size);
+      idx.forEach(i => xor(d, this.src[i]));
+      const u = new Uint8Array(HEAD + this.size), L = this.len, C = this.crc;
+      u.set([0x56, 0x33, this.sess >> 8, this.sess & 255, s >> 8, s & 255, this.K >> 8, this.K & 255,
+        L >>> 24, (L >>> 16) & 255, (L >>> 8) & 255, L & 255, C >>> 24, (C >>> 16) & 255, (C >>> 8) & 255, C & 255]);
+      u.set(d, HEAD);
+      return b45enc(u);
+    }
+  }
+  function parseFrame(str) {
+    let b; try { b = b45dec(str); } catch (e) { return null; }
+    if (b.length <= HEAD || b[0] !== 0x56 || b[1] !== 0x33) return null;
+    const sess = (b[2] << 8) | b[3], seq = (b[4] << 8) | b[5], K = (b[6] << 8) | b[7];
+    if (!K) return null;
+    return { sess, seq, K, len: ((b[8] << 24) | (b[9] << 16) | (b[10] << 8) | b[11]) >>> 0, crc: ((b[12] << 24) | (b[13] << 16) | (b[14] << 8) | b[15]) >>> 0, data: b.slice(HEAD), idx: indices(sess, seq, K) };
+  }
+  // GF(2)のガウス消去。どの順番で読んでも、K枚+数枚でぴったり復元できる
+  class Decoder {
+    constructor(f) { this.sess = f.sess; this.K = f.K; this.len = f.len; this.crc = f.crc; this.piv = new Array(f.K).fill(null); this.n = 0; this.seen = new Set(); this.frames = 0; }
+    add(f) {
+      if (this.seen.has(f.seq) || this.n === this.K) return false;
+      this.seen.add(f.seq); this.frames++;
+      const bits = new Uint8Array(this.K), d = f.data.slice();
+      f.idx.forEach(i => { bits[i] = 1; });
+      for (let c = 0; c < this.K; c++) {
+        if (!bits[c]) continue;
+        const p = this.piv[c];
+        if (p) { for (let j = c; j < this.K; j++) bits[j] ^= p.bits[j]; xor(d, p.data); }
+        else { this.piv[c] = { bits, data: d }; this.n++; break; }
+      }
+      return true;
+    }
+    get done() { return this.n === this.K; }
+    result() {
+      if (!this.done) return null;
+      const sol = new Array(this.K), size = this.piv[0].data.length;
+      for (let c = this.K - 1; c >= 0; c--) {
+        const row = this.piv[c], d = row.data.slice();
+        for (let j = c + 1; j < this.K; j++) if (row.bits[j]) xor(d, sol[j]);
+        sol[c] = d;
+      }
+      const out = new Uint8Array(this.K * size); sol.forEach((c, i) => out.set(c, i * size));
+      const r = out.subarray(0, this.len);
+      return crc32(r) === this.crc ? r : null;
+    }
   }
   function sniffMime(u) { return u[0] === 0xFF && u[1] === 0xD8 ? 'image/jpeg' : (u[0] === 0x52 && u[1] === 0x49 ? 'image/webp' : 'image/png'); }
 
-  // text(string)でもバイト列でも描ける。ECC=L(枚数を減らすため)
-  function drawQR(canvas, data, px = 760) {
-    let str = data;
-    if (typeof data !== 'string') { str = ''; for (let i = 0; i < data.length; i += 4096) str += String.fromCharCode.apply(null, data.subarray(i, i + 4096)); }
-    const qr = qrcode(0, 'L'); qr.addData(str, 'Byte'); qr.make();
-    const n = qr.getModuleCount(), q = 3, cell = Math.max(3, Math.floor(px / (n + q * 2))), size = cell * (n + q * 2);
+  // QRを「画面の実ピクセルにぴったり」描く。1マスを整数ピクセルにしてぼやけを防ぐ。
+  function drawQR(canvas, text, cssPx = 600, ecc = 'L') {
+    const qr = qrcode(0, ecc); qr.addData(text, /^[0-9A-Z $%*+\-./:]+$/.test(text) ? 'Alphanumeric' : 'Byte'); qr.make();
+    const n = qr.getModuleCount(), q = 4, dpr = window.devicePixelRatio || 1;
+    const cell = Math.max(2, Math.floor(cssPx * dpr / (n + q * 2))), size = cell * (n + q * 2);
     canvas.width = canvas.height = size;
+    canvas.style.width = canvas.style.height = (size / dpr) + 'px';
     const c = canvas.getContext('2d');
     c.fillStyle = '#fff'; c.fillRect(0, 0, size, size); c.fillStyle = '#000';
     for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (qr.isDark(y, x)) c.fillRect((x + q) * cell, (y + q) * cell, cell, cell);
     return n;
   }
 
-  return { icon, hydrateIcons, crc32, makeChunks, parseChunk, assemble, sniffMime, drawQR, HEAD };
+  return { icon, hydrateIcons, crc32, b45enc, b45dec, Encoder, Decoder, parseFrame, sniffMime, drawQR, HEAD };
 })();
